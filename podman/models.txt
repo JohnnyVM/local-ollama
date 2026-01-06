@@ -1,0 +1,7 @@
+# One model per line; lines starting with '#' are ignored.
+# Default selection targets coding models that fit ~4 GB VRAM.
+# All entries default to Ollama's smallest quantization variants.
+qwen2.5-coder:1.5b
+deepseek-coder:1.3b
+codegemma:2b
+stable-code:3b
