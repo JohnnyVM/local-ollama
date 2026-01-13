@@ -11,6 +11,8 @@ services:
       MODEL_LIST_FILE: /models/preload.txt  
       OLLAMA_HOME: /root/.ollama  
       NVIDIA_VISIBLE_DEVICES: all  
+      OLLAMA_DEBUG: 0
+      OLLAMA_CONTEXT_LENGTH: 32768
     volumes:  
       - ./data:/root/.ollama:Z  
       - ./entrypoint.sh:/entrypoint.sh:Z  
