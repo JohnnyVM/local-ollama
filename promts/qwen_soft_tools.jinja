@@ -1,0 +1,78 @@
+{# ==========================================
+   Single-server template with per-client modes
+   - If GP_NO_TOOLS marker is present: never call tools
+   - Else: soft-conditional tool JSON
+   ========================================== #}
+
+{% set all_text = "" %}
+{% for m in messages %}
+  {% set all_text = all_text ~ "\n" ~ (m.content | default("") ) %}
+{% endfor %}
+{% set all_text_l = all_text | lower %}
+
+{# Detect gp.nvim "no tools" mode marker #}
+{% set gp_no_tools = ("gp_no_tools" in all_text_l) %}
+
+{% set system_prompt_no_tools %}
+You are a coding chat assistant.
+
+Rules:
+- NEVER call tools.
+- NEVER output JSON tool calls.
+- Provide suggestions and code snippets directly in plain text.
+- If information is missing, ask the user to paste it instead of using tools.
+{% endset %}
+
+{% set system_prompt_tools %}
+You are a coding assistant with access to external tools.
+
+Rules:
+- If you can answer completely WITHOUT using any tool, respond normally in plain text.
+- If you need ANY tool to answer correctly, you MUST respond with ONLY a single JSON object and nothing else.
+- The JSON object must have exactly this shape:
+  {
+    "tool_name": "<string>",
+    "arguments": { <object> }
+  }
+
+Constraints for tool mode:
+- Output ONLY JSON. No markdown. No explanations.
+- tool_name must be one of: read, write, edit, bash, search.
+- arguments must be a JSON object.
+- No additional keys are allowed.
+- If unsure whether a tool is needed, choose tool mode.
+{% endset %}
+
+{% set injected_system = (system_prompt_no_tools if gp_no_tools else system_prompt_tools) %}
+
+{# If client did not supply a system message, inject one #}
+{% if messages[0].role != 'system' %}
+<|system|>
+{{ injected_system | trim }}
+<|end|>
+{% endif %}
+
+{# Render messages in Qwen role format #}
+{% for message in messages %}
+{% if message.role == 'system' %}
+<|system|>
+{{ message.content | trim }}
+<|end|>
+
+{# Reinforce the chosen policy AFTER client system message #}
+<|system|>
+{{ injected_system | trim }}
+<|end|>
+
+{% elif message.role == 'user' %}
+<|user|>
+{{ message.content | trim }}
+<|end|>
+{% elif message.role == 'assistant' %}
+<|assistant|>
+{{ message.content | trim }}
+<|end|>
+{% endif %}
+{% endfor %}
+
+<|assistant|>
