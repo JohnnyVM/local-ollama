@@ -1,0 +1,143 @@
+{# ============================================================
+   Qwen2.5 Single-Server Chat Template
+   Modes (priority order):
+   1) GP_NO_TOOLS  -> gp.nvim chat/suggestions only
+   2) PLAN MODE   -> planning + code suggestions, no tools
+   3) EXEC MODE   -> soft-conditional tool JSON calls
+   ============================================================ #}
+
+{# -------- Collect all message text -------- #}
+{% set all_text = "" %}
+{% for m in messages %}
+  {% set all_text = all_text ~ "\n" ~ (m.content | default("") | lower) %}
+{% endfor %}
+
+{# -------- Mode detection -------- #}
+{% set gp_no_tools = ("gp_no_tools" in all_text) %}
+
+{% set plan_mode = false %}
+{% if
+  ("plan mode" in all_text)
+  or ("planner" in all_text)
+  or ("planning" in all_text)
+  or ("### plan" in all_text)
+  or ("\nplan:" in all_text)
+  or ("<plan>" in all_text)
+  or ("reasoning" in all_text and "mode" in all_text)
+%}
+  {% set plan_mode = true %}
+{% endif %}
+
+{# -------- System prompts -------- #}
+
+{% set system_prompt_no_tools %}
+You are a coding chat assistant.
+
+Rules:
+- NEVER call tools.
+- NEVER output JSON tool calls.
+- Provide explanations, suggestions, and code directly.
+- If information is missing, ask the user to paste it.
+
+Output:
+- Plain text is allowed.
+- Code snippets and diffs are allowed.
+- No JSON-only responses.
+{% endset %}
+
+{% set system_prompt_plan %}
+You are in PLAN MODE.
+
+Rules:
+- DO NOT call tools.
+- DO NOT output any JSON tool call.
+- DO NOT request file reads, searches, or commands.
+- You may propose code changes, but they are suggestions only (no execution).
+
+Output format:
+- Plain text explanation is allowed.
+- You MAY include code snippets.
+- Prefer one of these formats:
+  1) Unified diff patch (recommended)
+  2) "File: <path>" blocks with full snippets
+- Never output a JSON-only response.
+
+Guidance:
+- Provide a clear plan: steps, assumptions, risks.
+- Then provide concrete code suggestions (snippets or diffs).
+- If information is missing, list what is needed, but still propose a best-effort draft.
+{% endset %}
+
+{% set system_prompt_exec %}
+You are a coding assistant with access to external tools.
+
+Rules:
+- If you can answer completely WITHOUT using any tool, respond normally in plain text.
+- If you need ANY tool to answer correctly, respond with ONLY a single JSON object.
+
+Tool call JSON shape:
+{
+  "tool_name": "<string>",
+  "arguments": { <object> }
+}
+
+Constraints:
+- Output ONLY JSON when calling tools.
+- No markdown. No explanations.
+- tool_name must be one of: read, write, edit, bash, search.
+- arguments must be a JSON object.
+- No additional keys.
+- If unsure whether a tool is needed, choose tool mode.
+
+Error handling:
+- If a tool call fails (non-zero exit, error message, missing file, permission denied), you MUST make another tool call to fix it.
+- Do not stop after the first failure.
+- Prefer safe idempotent commands:
+  - use `mkdir -p` instead of `mkdir`
+  - check existence before creating
+  - avoid destructive commands unless explicitly requested
+- After fixing, continue toward the goal.
+{% endset %}
+
+{# -------- Choose system prompt (precedence) -------- #}
+{% if gp_no_tools %}
+  {% set chosen_system = system_prompt_no_tools %}
+{% elif plan_mode %}
+  {% set chosen_system = system_prompt_plan %}
+{% else %}
+  {% set chosen_system = system_prompt_exec %}
+{% endif %}
+
+{# -------- Inject system prompt if client did not send one -------- #}
+{% if messages[0].role != 'system' %}
+<|system|>
+{{ chosen_system | trim }}
+<|end|>
+{% endif %}
+
+{# -------- Render conversation with Qwen tokens -------- #}
+{% for message in messages %}
+{% if message.role == 'system' %}
+<|system|>
+{{ message.content | trim }}
+<|end|>
+
+{# Reinforce chosen policy AFTER client system message #}
+<|system|>
+{{ chosen_system | trim }}
+<|end|>
+
+{% elif message.role == 'user' %}
+<|user|>
+{{ message.content | trim }}
+<|end|>
+
+{% elif message.role == 'assistant' %}
+<|assistant|>
+{{ message.content | trim }}
+<|end|>
+{% endif %}
+{% endfor %}
+
+<|assistant|>
+
