@@ -29,7 +29,7 @@ import faiss
 from bs4 import BeautifulSoup
 from mcp.server.fastmcp import FastMCP
 
-from llama_index.core import Document, StorageContext, VectorStoreIndex
+from llama_index.core import Document, StorageContext, VectorStoreIndex, load_index_from_storage
 from llama_index.core.settings import Settings
 from llama_index.embeddings.fastembed import FastEmbedEmbedding
 from llama_index.vector_stores.faiss import FaissVectorStore
@@ -146,38 +146,62 @@ def build_or_load_index(persist_dir: Path, embed_model: str) -> VectorStoreIndex
     persist_dir.mkdir(parents=True, exist_ok=True)
     Settings.embed_model = FastEmbedEmbedding(model_name=embed_model)
 
-    faiss_path = persist_dir / "faiss.index"
+    index_id_path = persist_dir / "index_id.txt"
+    docstore_path = persist_dir / "docstore.json"
+    # FAISS stores to default__vector_store.json (binary, not JSON despite name)
+    faiss_store_path = persist_dir / "default__vector_store.json"
 
-    if faiss_path.exists():
-        faiss_index = faiss.read_index(str(faiss_path))
+    # Check if we have persisted data to load
+    if docstore_path.exists() and faiss_store_path.exists():
+        # Load the FAISS index from its persisted file
+        faiss_index = faiss.read_index(str(faiss_store_path))
         vector_store = FaissVectorStore(faiss_index=faiss_index)
         storage_context = StorageContext.from_defaults(
             vector_store=vector_store,
             persist_dir=str(persist_dir),
         )
-        return VectorStoreIndex.from_vector_store(
-            vector_store=vector_store,
-            storage_context=storage_context,
-        )
 
+        # If we have a stored index_id, use it; otherwise find the best one
+        index_id = None
+        if index_id_path.exists():
+            index_id = index_id_path.read_text().strip()
+
+        try:
+            return load_index_from_storage(storage_context, index_id=index_id)
+        except ValueError as e:
+            # Multiple indexes exist without a specified index_id.
+            # Find the one with the most nodes from the index_store.
+            if "Expected to load a single index" in str(e):
+                import json
+                index_store_path = persist_dir / "index_store.json"
+                if index_store_path.exists():
+                    data = json.loads(index_store_path.read_text())
+                    best_id, best_count = None, 0
+                    for idx_id, idx_data in data.get("index_store/data", {}).items():
+                        inner = json.loads(idx_data.get("__data__", "{}"))
+                        count = len(inner.get("nodes_dict", {}))
+                        if count > best_count:
+                            best_id, best_count = idx_id, count
+                    if best_id:
+                        index_id_path.write_text(best_id)
+                        return load_index_from_storage(storage_context, index_id=best_id)
+            raise
+
+    # Create a new index with FAISS vector store
     embed_dim = getattr(Settings.embed_model, "embed_dim", 384)
     faiss_index = faiss.IndexFlatIP(int(embed_dim))
     vector_store = FaissVectorStore(faiss_index=faiss_index)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
     index = VectorStoreIndex.from_documents([], storage_context=storage_context)
 
-    faiss.write_index(faiss_index, str(faiss_path))
+    # Store the index_id for future loads
+    index_id_path.write_text(index.index_id)
     index.storage_context.persist(persist_dir=str(persist_dir))
     return index
 
 
 def persist(index: VectorStoreIndex, persist_dir: Path) -> None:
     index.storage_context.persist(persist_dir=str(persist_dir))
-    faiss_path = persist_dir / "faiss.index"
-    vector_store = index.storage_context.vector_store
-    faiss_index = getattr(vector_store, "faiss_index", None)
-    if faiss_index is not None:
-        faiss.write_index(faiss_index, str(faiss_path))
 
 
 # -----------------------------
